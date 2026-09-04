@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyw7bak
+*.pyw7pack.stamp
+.pywin7-gate-manifest.json
+pywin7-pack-manifest.json
+*.tmp
+# C 构建中间产物（最终 exe/dll 随库附带，中间件忽略）
+*.obj
+*.exp
+runtime/**/*.lib
+tests/testdll/*.lib
