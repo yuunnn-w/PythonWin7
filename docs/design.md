@@ -34,7 +34,7 @@
 
 第三方依赖（libcrypto-3/libssl-3/libffi-8/libtommath/sqlite3/tcl90/tcl9tk90）全部已在树内 `DLLs\` 且对 Win7 基线**无独有缺失**。PE 头 OS/subsystem 版本 =6.0 ≤ 6.1，无 CPIW 拦截问题。
 
-**这 4 类之外没有任何其他 Win8+ 独有静态导入**——这是"静态引导面积极小"的实证基础。注意"缺失面随版本单调变小"的直觉**不成立**：3.12.0 的引导缺口为 7 条（比 3.14.x 还多：python312.dll 静态导入 CopyFile2 与 PssCaptureSnapshot/PssQuerySnapshot/PssFreeSnapshot，且树内不带 api-ms-win-core-path-l1-1-0.dll）。3.11 及以前官方就支持 Win7，本包的贡献是免 KB2999226 前提 + 面向未来 wheel 的运行时保险。
+**这 4 类之外没有任何其他 Win8+ 独有静态导入**——这是"静态引导面积极小"的实证基础。注意"缺失面随版本单调变小"的直觉**不成立**：3.12.0 的引导缺口为 7 条（比 3.14.x 还多：python312.dll 静态导入 CopyFile2 与 PssCaptureSnapshot/PssQuerySnapshot/PssFreeSnapshot，且树内不带 api-ms-win-core-path-l1-1-0.dll）。3.11 及以前官方就支持 Win7，本工具集的贡献是免 KB2999226 前提 + 面向未来 wheel 的运行时保险。
 
 ## 3. IAT 补丁技术（src/pywin7gate/iatpatch.py）
 
@@ -55,7 +55,7 @@ donor 技术救不了"目标 OS 上根本没有这个文件"的 DLL 名（例如
 ## 4. UCRT 私有部署
 
 - 文件来源：KB2999226（10.0.10240.16390，微软官方 Win7 目标构建），`tools/extract_kb2999226.py` 从 .msu 解出（expand.exe 两层 CAB，目标机不安装）。
-- 清单：`ucrtbase.dll` + 16 个 `api-ms-win-crt-*-l1-1-0.dll`（CRT → ucrtbase 转发）+ 7 个 `api-ms-win-core-*`（Win7 官方转发，导出全部转发 kernel32）+ `api-ms-win-eventing-provider-l1-1-0.dll` = 24 个。
+- 清单：`ucrtbase.dll` + 15 个 `api-ms-win-crt-*-l1-1-0.dll`（CRT → ucrtbase 转发）+ 7 个 `api-ms-win-core-*`（Win7 官方转发，导出全部转发 kernel32）+ `api-ms-win-eventing-provider-l1-1-0.dll` = 24 个。
 - 为什么不用 Win11 的 api-ms-win-core-* 文件：它们转发到 kernelbase.dll，Win7 没有。
 - 符号覆盖：python314.dll/t + 67 pyd + numpy 23 二进制的 UCRT 符号并集对 10240 **零缺口**（唯一缺 `__uncaught_exceptions` 仅被 msvcp_win 引用 —— msvcp_win 在本方案中列为不支持，见 §7）。
 - 备选：VxKex 预构建 ucrtbase 19041（Win10 目标构建），换文件即可切换，默认不用。
@@ -71,7 +71,7 @@ donor 技术救不了"目标 OS 上根本没有这个文件"的 DLL 名（例如
 
 ### 5.2 组件与触发链
 
-- **PyKexLdr**（启动器，顶替入口 exe）：通用解析——扫描同级 `python3*.dll`得版本 stem（"39"…"314t"；排除 python3.dll/python3t.dll 稳定 ABI shim），按自身文件名尾 `t` 选 free-threaded 变体，`PYW7_GUI` 编译开关选 pythonw。找不到（≤3.12 复制式 venv 里启动器被复制到 Scripts\）则回退读上级 `pyvenv.cfg` 的 `home=` 行解析，并设 `__PYVENV_LAUNCHER__`=自身路径（getpath.py 3.11+ 用它识别 venv）。3.13+ venv 是 redirector exe（读 pyvenv.cfg home 执行基树 python.exe=启动器），链路天然闭合。命令行**原样透传**（venv 的 argv[0] 语义依赖这一点）。挂起创建真解释器 → 依次远程注入 KexDll.dll、PyKexBoot.dll → 恢复主线程。
+- **PyKexLdr**（启动器，顶替入口 exe）：通用解析——扫描同级 `python3*.dll`得版本 stem（"39"…"314t"；排除 python3.dll/python3t.dll 稳定 ABI shim），按自身文件名尾 `t` 选 free-threaded 变体，`PYW7_GUI` 编译开关选 pythonw。找不到（≤3.12 复制式 venv 里启动器被复制到 Scripts\）则回退读上级 `pyvenv.cfg` 的 `home=` 行解析，并设 `__PYVENV_LAUNCHER__`=自身路径（getpath.py 3.11+ 用它识别 venv）。3.13+ venv 是 redirector exe（读 pyvenv.cfg home 执行基树 python.exe=启动器），链路天然闭合；3.12 及更早的官方重定向器（`Lib\venv\scripts\nt\python.exe`/`pythonw.exe`）只静态导入 VERSION.dll/KERNEL32.dll，经 Win7 基线扫描无缺失，build_pack 不做替换。命令行**原样透传**（venv 的 argv[0] 语义依赖这一点）。挂起创建真解释器 → 依次远程注入 KexDll.dll、PyKexBoot.dll → 恢复主线程。
 - **KexDll.dll**：仅作原语提供者（KexHkInstallBasicHook inline hook 引擎、KexNt* 直接 syscall 封装、KexPatchCpiwSubsystemVersionCheck）。
 - **PyKexBoot.dll**：注入后挂两个 hook + CPIW 补丁：
   1. `NtCreateUserProcess` hook → 子进程强制挂起+放宽句柄 → watcher 线程轮询 Toolhelp 快照至 kernel32 映射后注入同套 DLL（递归任意深度，上限 3 秒，超时/失败降级为无 Kex 运行，绝不卡死子进程）。
@@ -121,6 +121,21 @@ donor 技术救不了"目标 OS 上根本没有这个文件"的 DLL 名（例如
 .exe 一律走静态修：子进程镜像的导入快照先于注入完成（§5.3 的边界）。所有修复写入 `Lib\site-packages\.pywin7-gate-manifest.json`（前后 SHA-256、动作、产物清单），`python -m pywin7gate verify` 校验、`restore` 回滚单文件。
 
 **delvewheel 摊平（flatten_vendored）的必要性**：KxBase 的 AddDllDirectory 模拟不改动真 loader 搜索路径，numpy 这类靠 `os.add_dll_directory(numpy.libs)` 加载vendored DLL 的包在 Win7 上会失败——门禁预先把 vendored DLL 复制到引用者旁边，让 loader 的"应用目录/同目录"规则天然命中。摊平产物记入`pywin7-pack-manifest.json`，`--restore` 可完整清退。
+
+## 6b. 环境隔离层（隐士树）
+
+目标：树所在机器即便装了其他 Python / Anaconda，本树的解释器、shim、`which()` 分发、子进程都互不干扰。两道闸门：
+
+1. **启动期（C：PyKexLdr / PyKexExe）**：`CreateProcess` 前 `SetEnvironmentVariableW` 清除 `PYTHONHOME`/`PYTHONPATH`/`PYTHONSTARTUP` 并置 `PYTHONNOUSERSITE=1`。这些变量在解释器初始化早期（getpath 阶段）就被消费，任何进程内 Python 代码都来不及拦截——只能在这一层做。命令行保持逐字转发（argv[0] 承载 venv 检测），不动命令行只动环境块。
+2. **进程内（`Lib/sitecustomize.py`，每次启动）**：
+   - **PATH 消毒**：剔除"外来解释器目录"——含 `python.exe`/`pythonw.exe` 的目录、其父目录含 python.exe 的 `Scripts` 目录、路径含 `conda`/`\envs\` 的目录；白名单是本树（`base_prefix`/`prefix`/`exec_prefix` 及其 Scripts）与 `%LOCALAPPDATA%\Microsoft\WindowsApps`（应用别名目录，非解释器）。随后把本树根/Scripts 提到最前。效果：`shutil.which()`、jupyter_core 的子命令分发、`CreateProcess` 搜索、DLL 搜索路径都不再会命中外来安装；
+   - **sys.path 清洗**：剔除落在外来安装内的条目（宿主 PYTHONPATH 漏入的 `<外来根>`、`<外来根>\Lib[\site-packages]`）；脚本目录与普通代码目录不动；
+   - **user site 关闭**：`%APPDATA%\Python\PythonXY\site-packages` 是同版本所有安装共享的，从 sys.path 剔除并置 `site.ENABLE_USER_SITE=False`（`PYTHONNOUSERSITE=0` 可显式恢复）；
+   - **身份变量清除**：`VIRTUAL_ENV`/`CONDA_*` 从环境删除，子进程不再继承其他环境的激活身份。
+
+逃生门：`PYW7ISOLATE=0` 关闭进程内一半；启动期清除不可关（启动完整性保底）。要让自定义目录进 sys.path，用 `.pth` 文件而不是 PYTHONPATH。验收：`tests/test_isolation.py`（I1–I7，伪造外来 Anaconda + 敌意 PYTHONHOME/PYTHONPATH 全链路断言）。
+
+已知边界：直接双击运行负载 exe（`python3XX.exe`，绕过启动器）时启动期闸门不生效，仅靠 sitecustomize 的进程内一半（PYTHONHOME 劫持无法在此路径下防御）——分发文档始终引导用 `python.exe` 入口。
 
 ## 7. 明确不支持的项
 

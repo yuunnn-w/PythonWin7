@@ -22,7 +22,8 @@ Steps performed (each recorded in <tree>\\pywin7-pack-manifest.json):
   2. copy the VxKex binaries (KexDll.dll + 12 Kx*.dll; KxDw.dll deliberately
      excluded) into the tree root.  Skipped with --no-vxkex (pure-shim
      fallback route);
-  3. copy msvcp140.dll / msvcp140_1.dll / msvcp140_2.dll from
+  3. copy msvcp140.dll / msvcp140_1.dll / msvcp140_2.dll /
+     vcruntime140_threads.dll from
      assets\\msvc-redist (override with --msvcp-dir);
   4. scan the core DLLs (python3XX.dll / python3XXt.dll, auto-detected)
      against the bare-Win7 baseline and IAT-patch every import that has no
@@ -45,8 +46,20 @@ Steps performed (each recorded in <tree>\\pywin7-pack-manifest.json):
      rewrites imports of later-loaded modules in memory and propagates into
      every child process.  Command lines pass through verbatim, so venv
      keeps working;
-  8. re-scan the core DLLs: anything still unresolvable on bare Win7 SP1 is
-     reported (nonzero exit).
+  8. relocatable Scripts shims: copy the CRT-free PyKexExe stubs
+     (PyKexExe.exe / PyKexExeW.exe) into the tree root and rewrite every
+     python console script in Scripts to the PyKexExe layout
+     ([stub]["#!pyw7-relocatable"][zip payload]).  The stub finds
+     python[w].exe RELATIVE TO ITS OWN PATH, so the packed tree runs from
+     any directory, after any move/copy/rename, with zero commands and zero
+     hardcoded paths.  Originals are kept in Scripts\\pyw7bak\\;
+     Scripts\\.pyw7loc records the pack-time root so sitecustomize can
+     repair legacy (never-converted) shims silently after a move;
+  9. patch jupyterlab's node/yarn probe (site-patch): wrap _yarn_config /
+     _node_check in SetErrorMode so a Win8+-only node.exe found on PATH
+     cannot pop a modal loader dialog; skipped when jupyterlab is absent;
+ 10. write the manifest and re-scan the core DLLs: anything still
+     unresolvable on bare Win7 SP1 is reported (nonzero exit).
 
 Undo everything with --restore.
 """
@@ -71,7 +84,7 @@ for _m in [m for m in list(sys.modules)
            if m == "pywin7gate" or m.startswith("pywin7gate.")]:
     del sys.modules[_m]
 
-from pywin7gate import fixers, gate                          # noqa: E402
+from pywin7gate import fixers, gate, shims as shimod            # noqa: E402
 from pywin7gate import pe as pemod                          # noqa: E402
 from pywin7gate.iatpatch import (IATPatcher, PatchError,      # noqa: E402
                                  is_patched, restore as iat_restore,
@@ -91,7 +104,8 @@ RUNTIME = os.path.join(PYW7, "runtime")
 KX_FILES = ["KxAdvapi.dll", "KxBase.dll", "KxCom.dll", "KxCrt.dll",
             "KxCryp.dll", "KxDx.dll", "KxMi.dll", "KxNet.dll",
             "KxNt.dll", "KxSChanl.dll", "KxUia.dll", "KxUser.dll"]
-MSVCP_FILES = ["msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll"]
+MSVCP_FILES = ["msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+               "vcruntime140_threads.dll"]
 
 MANIFEST = "pywin7-pack-manifest.json"
 
@@ -225,7 +239,14 @@ def install_launchers(tree, entries, actions, dry_run, log):
             log("  skip (absent): %s" % orig)
             continue
         if is_launcher_installed(p_orig):
-            log("  already installed: %s" % orig)
+            src = os.path.join(ldr, lname)
+            if not dry_run and sha256_of(p_orig) != sha256_of(src):
+                shutil.copy2(src, p_orig)     # stale launcher build: refresh
+                actions.append({"action": "copy", "file": orig,
+                                "sha256": sha256_of(src)})
+                log("  launcher refreshed (new build): %s" % orig)
+            else:
+                log("  already installed: %s" % orig)
             continue
         if not dry_run:
             if os.path.normcase(p_orig) != os.path.normcase(p_ren) and \
@@ -257,6 +278,112 @@ def is_launcher_installed(path):
         return dlls == {"kernel32.dll"} and len(pe.data) < 64 * 1024
     except (pemod.PEError, OSError):
         return False
+
+
+# Python 3.13+ ships venv redirector exes under Lib\venv\scripts\nt\ which
+# venv copies into <venv>\Scripts as python.exe/pythonw.exe.  The stock
+# redirectors import api-ms-win-core-path-l1-1-0.dll (PathCch*), which does
+# not exist on a bare Win7 -- every venv interpreter then fails to start
+# with STATUS_DLL_NOT_FOUND.  Replace them with PyKexLdr builds (kernel32
+# only); the launcher's pyvenv.cfg fallback handles the venv case.
+VENV_REDIRECTORS = (
+    ("venvlauncher.exe", "PyKexLdr.exe"),
+    ("venvlaunchert.exe", "PyKexLdr.exe"),
+    ("venvwlauncher.exe", "PyKexLdrW.exe"),
+    ("venvwlaunchert.exe", "PyKexLdrW.exe"),
+)
+
+
+def replace_venv_redirectors(tree, actions, dry_run, log):
+    """Swap the 3.13+ venv redirector exes for PyKexLdr variants.
+    Originals move to Lib\\venv\\pyw7bak\\ (NOT kept in scripts\\nt: venv
+    copies every file it finds there into new venvs)."""
+    nt_dir = os.path.join(tree, "Lib", "venv", "scripts", "nt")
+    if not os.path.isdir(nt_dir):
+        return
+    bak_dir = os.path.join(tree, "Lib", "venv", "pyw7bak")
+    ldr_dir = os.path.join(RUNTIME, "PyKexLdr")
+    for name, lname in VENV_REDIRECTORS:
+        p = os.path.join(nt_dir, name)
+        if not os.path.isfile(p):
+            continue                       # pre-3.13 tree: nothing to do
+        if is_launcher_installed(p):
+            src = os.path.join(ldr_dir, lname)
+            if not dry_run and sha256_of(p) != sha256_of(src):
+                shutil.copy2(src, p)
+                actions.append({"action": "copy", "file":
+                                os.path.relpath(p, tree),
+                                "sha256": sha256_of(src)})
+                log("  venv redirector refreshed (new build): %s" % name)
+            else:
+                log("  venv redirector already ours: %s" % name)
+            continue
+        rel = os.path.relpath(p, tree)
+        bak = os.path.join(bak_dir, name)
+        if not dry_run and not os.path.isfile(bak):
+            os.makedirs(bak_dir, exist_ok=True)
+            os.rename(p, bak)
+            actions.append({"action": "rename",
+                            "from": rel,
+                            "to": os.path.relpath(bak, tree)})
+        if not dry_run:
+            shutil.copy2(os.path.join(ldr_dir, lname), p)
+        actions.append({"action": "copy", "file": rel,
+                        "sha256": sha256_of(os.path.join(ldr_dir, lname))
+                        if not dry_run else None})
+        log("  venv redirector: %s -> %s (orig -> Lib\\venv\\pyw7bak\\)"
+            % (name, lname))
+
+
+def convert_script_shims(tree, actions, dry_run, log):
+    """Rewrite every python console script in Scripts to the relocatable
+    PyKexExe layout: [CRT-free stub]["#!pyw7-relocatable"][zip payload].
+    The stub resolves python[w].exe relative to its own path (venv Scripts
+    -> sibling; tree Scripts -> parent), so a moved/copied tree needs zero
+    commands.  Original stubs are kept in Scripts\\pyw7bak\\."""
+    scripts = os.path.join(tree, "Scripts")
+    if not os.path.isdir(scripts):
+        log("  no Scripts dir; nothing to convert")
+        return
+    if dry_run:
+        n = 0
+        for fn in sorted(os.listdir(scripts)):
+            if not fn.lower().endswith(".exe"):
+                continue
+            info = shimod.read_shim(os.path.join(scripts, fn))
+            if info and not info["converted"]:
+                n += 1
+        log("  would convert %d shim(s) to PyKexExe stubs" % n)
+        return
+
+    def on_convert(rel, bak_rel):
+        actions.append({"action": "shim-convert", "file": rel,
+                        "backup": bak_rel})
+
+    counts = shimod.convert_tree(tree, log=log, on_convert=on_convert)
+    log("  shims: %d converted, %d stub-refreshed, %d already relocatable, "
+        "%d skipped"
+        % (counts["converted"], counts["updated"], counts["ok"],
+           counts["skip"]))
+
+
+def write_relocation_stamp(tree, actions, dry_run, log):
+    """Scripts\\.pyw7loc records the pack-time tree root.  sitecustomize
+    compares it at every interpreter start and silently rewrites LEGACY
+    (never PyKexExe-converted) shim shebangs when the tree was moved."""
+    scripts = os.path.join(tree, "Scripts")
+    if not os.path.isdir(scripts):
+        return
+    stamp = os.path.join(scripts, ".pyw7loc")
+    rel = os.path.relpath(stamp, tree)
+    if os.path.isfile(stamp):
+        log("  stamp exists: %s" % rel)
+        return
+    log("  stamp: %s" % rel)
+    if not dry_run:
+        with open(stamp, "w", encoding="utf-8") as f:
+            f.write(os.path.normpath(tree))
+    actions.append({"action": "write-file", "file": rel})
 
 
 def fix_pth_files(tree, stems, actions, dry_run, log):
@@ -373,6 +500,104 @@ def patch_core_dlls(tree, stems, iat_fallback_target, kx_index, baseline,
                         "imports": jobs_desc})
 
 
+_JLAB_HELPERS = '''def _suppress_loader_popups():
+    """PythonWin7: on Windows, keep a broken child process (e.g. a Win8+-only
+    node.exe found on PATH) from popping a modal loader dialog; the error
+    mode is inherited by the child.  Returns the previous mode, else None."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    SEM_FAILCRITICALERRORS = 0x1
+    SEM_NOGPFAULTERRORBOX = 0x2
+    SEM_NOOPENFILEERRORBOX = 0x8000
+    return ctypes.windll.kernel32.SetErrorMode(
+        SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
+
+
+def _restore_error_mode(prev):
+    if prev is not None:
+        import ctypes
+        ctypes.windll.kernel32.SetErrorMode(prev)
+
+
+'''
+
+# (anchor, replacement) pairs against upstream jupyterlab/commands.py 4.x
+_JLAB_SUBS = [
+    ("def _node_check(logger):",
+     _JLAB_HELPERS + "def _node_check(logger):"),
+    ('    node = which("node")\n'
+     '    try:\n'
+     '        output = subprocess.check_output([node, "node-version-check.js"], cwd=HERE)  # noqa S603\n'
+     '        logger.debug(output.decode("utf-8"))\n'
+     '    except Exception:',
+     '    node = which("node")\n'
+     '    _em = _suppress_loader_popups()\n'
+     '    try:\n'
+     '        try:\n'
+     '            output = subprocess.check_output([node, "node-version-check.js"], cwd=HERE)  # noqa S603\n'
+     '            logger.debug(output.decode("utf-8"))\n'
+     '        finally:\n'
+     '            _restore_error_mode(_em)\n'
+     '    except Exception:'),
+    ('    try:\n'
+     '        output_binary = subprocess.check_output(  # noqa S603\n'
+     '            [node, YARN_PATH, "config", "--json"],',
+     '    _em = _suppress_loader_popups()\n'
+     '    try:\n'
+     '        output_binary = subprocess.check_output(  # noqa S603\n'
+     '            [node, YARN_PATH, "config", "--json"],'),
+    ('    except Exception as e:\n'
+     '        logger.error(f"Fail to get yarn configuration. {e!s}")\n'
+     '\n'
+     '    return configuration',
+     '    except Exception as e:\n'
+     '        logger.error(f"Fail to get yarn configuration. {e!s}")\n'
+     '    finally:\n'
+     '        _restore_error_mode(_em)\n'
+     '\n'
+     '    return configuration'),
+]
+
+
+def patch_jupyterlab_probe(tree, actions, dry_run, log):
+    """Site-patch: wrap jupyterlab's node/yarn probes in SetErrorMode so a
+    broken Win8+-only node.exe found on PATH (common on machines with
+    Anaconda) fails silently instead of hanging startup behind a modal
+    loader dialog on bare Win7.  Idempotent; skips cleanly when jupyterlab
+    is absent or its internals have drifted from the 4.x anchors."""
+    path = os.path.join(tree, "Lib", "site-packages", "jupyterlab",
+                        "commands.py")
+    if not os.path.isfile(path):
+        log("   jupyterlab not installed; skipped")
+        return
+    rel = os.path.relpath(path, tree)
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    if "_suppress_loader_popups" in text:
+        log("   already patched: %s" % rel)
+        return
+    for old, new in _JLAB_SUBS:
+        if old not in text:
+            print("   !! jupyterlab commands.py layout drifted; apply the "
+                  "node-probe patch manually (docs/playbook.md)")
+            return
+        text = text.replace(old, new, 1)
+    try:
+        compile(text, path, "exec")
+    except SyntaxError:
+        print("   !! patched jupyterlab commands.py failed to compile; "
+              "leaving it untouched (docs/playbook.md)")
+        return
+    if dry_run:
+        log("   would patch: %s" % rel)
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    actions.append({"action": "site-patch", "file": rel})
+    log("   patched: %s" % rel)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target", required=True,
@@ -444,6 +669,22 @@ def main(argv=None):
                     print("restored:", rec["file"])
                 except OSError as e:
                     print("._pth restore failed:", e)
+            elif rec["action"] == "shim-convert":
+                p = os.path.join(tree, rec["file"])
+                if os.path.exists(p):
+                    os.remove(p)
+                bak = os.path.join(tree, rec["backup"]) \
+                    if rec.get("backup") else None
+                if bak and os.path.exists(bak):
+                    os.rename(bak, p)
+                    print("restored shim:", rec["file"])
+                else:
+                    print("removed converted shim:", rec["file"])
+            elif rec["action"] == "write-file":
+                p = os.path.join(tree, rec["file"])
+                if os.path.exists(p):
+                    os.remove(p)
+                    print("removed:", rec["file"])
         for rel in ("Lib\\sitecustomize.py",):
             p = os.path.join(tree, rel)
             if os.path.exists(p):
@@ -564,8 +805,24 @@ def main(argv=None):
             print("   !! no entry-point exes found; nothing to shim")
         else:
             install_launchers(tree, entries, actions, args.dry_run, log)
+        replace_venv_redirectors(tree, actions, args.dry_run, log)
 
-    print("== 8. write manifest + final rescan")
+    print("== 8. relocatable Scripts shims (PyKexExe) + relocation stamp")
+    exe_stub_dir = os.path.join(RUNTIME, "PyKexExe")
+    for stub in (shimod.STUB_CONSOLE, shimod.STUB_GUI):
+        if not os.path.isfile(os.path.join(exe_stub_dir, stub)):
+            print("!! %s missing -- build it first with "
+                  "runtime\\PyKexExe\\build.bat" % stub)
+            return 2
+    copy_set([shimod.STUB_CONSOLE, shimod.STUB_GUI], exe_stub_dir, tree,
+             actions, args.dry_run, log)
+    convert_script_shims(tree, actions, args.dry_run, log)
+    write_relocation_stamp(tree, actions, args.dry_run, log)
+
+    print("== 9. jupyterlab node-probe popup patch (site-patch)")
+    patch_jupyterlab_probe(tree, actions, args.dry_run, log)
+
+    print("== 10. write manifest + final rescan")
     if not args.dry_run:
         m = {"version": 2,
              "when": datetime.datetime.now().isoformat(timespec="seconds"),

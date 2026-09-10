@@ -5,8 +5,18 @@ __pycache__/
 .pywin7-gate-manifest.json
 pywin7-pack-manifest.json
 *.tmp
+*.log
 # C 构建中间产物（最终 exe/dll 随库附带，中间件忽略）
 *.obj
 *.exp
 runtime/**/*.lib
 tests/testdll/*.lib
+# Python 开发/构建缓存（运行工具的机器本地产生）
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+wheels/

@@ -1,8 +1,9 @@
 # third_party — 第三方资源清单
 
 本目录收纳随仓库分发的第三方二进制，**全部为官方发布物的原样拷贝，未做任何
-修改**。每个来源都给出官方 URL 与 SHA-256（见 `SHA256SUMS.txt`），可自行重新
-下载校验。
+修改**。`SHA256SUMS.txt` 覆盖仓库内全部文件；另有体积较大的上游发布物原件
+（VxKex 安装包）不随仓库分发，其 SHA-256 见 `UPSTREAM-SHA256.txt`，可自行从
+官方 releases 下载校验。
 
 ## vxkex/ — VxKex NEXT 运行时二进制
 
@@ -11,16 +12,17 @@
 | 名称 | VxKex NEXT（Windows 7 API Extensions） |
 | 来源仓库 | https://github.com/YuZhouRen86/VxKex-NEXT （上游：vxiiduu/VxKex） |
 | 版本 | 1.2.3.2462 |
-| 官方发布物 | `KexSetup_Release_1_2_3_2462.exe`（Inno Setup 安装包，本目录附有原件） |
+| 官方发布物 | `KexSetup_Release_1_2_3_2462.exe`（Inno Setup 安装包）；**本仓库不分发原件**，需从上游 releases 自行下载，其 SHA-256 见 `UPSTREAM-SHA256.txt` |
 | 许可证 | 上游未附带 LICENSE 文件；README 声明基于 vxiiduu VxKex 完全开源。**再分发前请与上游作者确认条款** |
-| 修改 | 无（原样二进制拷贝） |
+| 修改 | 无（DLL 为官方发布物解包后的原样拷贝） |
 
 ### 文件与用途
 
-- `KexSetup_Release_1_2_3_2462.exe` — 官方安装包**原件**（SHA-256 见
-  `SHA256SUMS.txt`），作为本目录全部 DLL 的来源凭证与离线重装渠道。
-  用 7-Zip 可直接解开（`7z x KexSetup_Release_1_2_3_2462.exe`），
-  其中的 `Core64/KexDll.dll`、`Kex64/Kx*.dll` 与本目录同名文件逐字节一致。
+- 本目录的 `Core64/KexDll.dll` 与 `Kex64/Kx*.dll` 来自官方安装包
+  `KexSetup_Release_1_2_3_2462.exe`。**安装包原件本仓库不分发**；需要复核来源时
+  从上游 releases 下载（URL 与 SHA-256 见 `UPSTREAM-SHA256.txt`），用 7-Zip
+  解开（`7z x KexSetup_Release_1_2_3_2462.exe`），其中的 `Core64/`、`Kex64/`
+  应与本目录同名文件逐字节一致。
 - `Core64/KexDll.dll` — VxKex 核心：基础 inline hook 引擎（`KexHkInstallBasicHook`）、
   直接 syscall 封装（`KexNtCreateUserProcess`/`KexNtMapViewOfSection`/
   `KexNtQueryVirtualMemory`）、CPIW 子系统版本检查绕过
@@ -76,7 +78,16 @@ Chromium 系应用专用，无法回移到裸 Win7）。Python 场景用不到 D
 Win7 可承载）。本方案的统一路线不重编 CPython，因此不分发、不使用 VC-LTL5。
 安装方式见上游 README（NuGet/发布包均可）。
 
-## 下载与校验（经代理的示例）
+## 下载与校验
+
+仓库内随附资产可直接校验（Git Bash 自带 `sha256sum`，相对路径以本目录为基准）：
+
+```bash
+cd third_party
+sha256sum -c SHA256SUMS.txt          # 期望全部 OK
+```
+
+上游发布物原件复核（可选；`KexSetup_Release_1_2_3_2462.exe` 不在仓库内）：
 
 ```bash
 # GitHub 直连不通时走代理（示例端口 7890，按实际改）
@@ -85,8 +96,8 @@ curl -x http://127.0.0.1:7890 -L -o KexSetup_Release_1_2_3_2462.exe \
 curl -x http://127.0.0.1:7890 -L -o YY-Thunks-Objs.zip \
   https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.2/YY-Thunks-Objs.zip
 
-# 校验（Git Bash 自带 sha256sum）
-sha256sum -c SHA256SUMS.txt --ignore-missing
+# 校对下载到的原件
+sha256sum -c UPSTREAM-SHA256.txt
 ```
 
 手动备选：浏览器开代理访问上述 releases 页面下载，再用 `sha256sum` 对照。

@@ -12,9 +12,10 @@
 | 许可证 | 微软软件许可条款（随 Windows 更新分发；作为 UCRT 可再分发运行时的组成部分使用） |
 | 修改 | 无（用 `tools/extract_kb2999226.py` 从 .msu 解出，未改字节） |
 
-- `amd64/`：`ucrtbase.dll` + 16 个 `api-ms-win-crt-*-l1-1-0.dll`（CRT 转发到 ucrtbase）
+- `amd64/`：`ucrtbase.dll` + 15 个 `api-ms-win-crt-*-l1-1-0.dll`（CRT 转发到 ucrtbase）
   + 7 个 `api-ms-win-core-*` Win7 官方转发文件（导出全部转发 `kernel32`）
-  = 24 个 DLL。这是**默认 UCRT 来源**：微软官方 Win7 目标构建，裸 Win7 SP1 风险最低。
+  + `api-ms-win-eventing-provider-l1-1-0.dll` = 24 个 DLL。这是**默认 UCRT 来源**：
+  微软官方 Win7 目标构建，裸 Win7 SP1 风险最低。
 - `x86/`：同套 32 位文件（备用，当前方案仅交付 x64）。
 - **目标机不安装此 KB**；这些 DLL 由 `tools/build_pack.py` 复制到 Python 树根做私有部署
   （应用目录在 DLL 搜索序中优先于 system32）。
@@ -36,6 +37,11 @@
 为后续 pip 安装的 C++ 扩展 wheel（numpy 一类）预备——很多 wheel 不自带 C++ 运行时。
 如需更新，从本机 VS2022 的 `VC\Redist\MSVC\<版本>\x64\Microsoft.VC143.CRT`
 目录提取替换即可。
+
+`vcruntime140_threads.dll`：14.51.36247（来源：conda-forge `vc14_runtime`
+包的原样拷贝，同为微软可再分发组件）。新版 wheel（如 numpy 2.5 / sklearn 1.9）
+开始引用其中的 `mtx_*` C++ 互斥函数，缺失会让门禁成片拒修；CPython 官方树不附带，
+必须随包部署。
 
 ## baseline/ — 各 Windows 版本 API 导出数据库
 

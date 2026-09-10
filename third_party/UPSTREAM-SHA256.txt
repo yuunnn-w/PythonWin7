@@ -1,0 +1,13 @@
+# 上游发布物原件的 SHA-256（用于复核，文件本身不在本仓库内）
+#
+# 用法：从官方 releases 下载到本目录后执行
+#   sha256sum -c UPSTREAM-SHA256.txt
+#
+# 4eeecb…  KexSetup_Release_1_2_3_2462.exe
+#   来源: https://github.com/YuZhouRen86/VxKex-NEXT/releases/tag/1.2.3.2462
+#   用途: vxkex/ 下 KexDll.dll 与 Kx*.dll 的来源凭证；解包比对见 README.md
+4eeecb4e2b086f515940c585167969f3b4f96218edae72ac9fa674b4d168ce4b *KexSetup_Release_1_2_3_2462.exe
+
+# 518ed7…  YY-Thunks-Objs.zip（该 zip 同时随仓库分发，见 SHA256SUMS.txt）
+#   来源: https://github.com/Chuyu-Team/YY-Thunks/releases/tag/v1.2.2
+518ed7ef4825e8a41997fbccfa2c8090cf31a6038fd51520a2e49886f947f9fc *YY-Thunks-Objs.zip

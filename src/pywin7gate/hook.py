@@ -11,7 +11,8 @@ by hand), the gate is run on the fly:
                 the import proceeds;
   * rejected -> ImportError with the exact Win7 blocker list.
 
-Disable entirely with environment variable PYW7GATE=0.
+Off by default (distribution-friendly); enable with environment variable
+PYW7GATE=1 (packager-side audit).
 The hook NEVER raises for its own internal failures (worst case: import
 proceeds ungated, exactly like without the hook).
 """
@@ -101,7 +102,7 @@ def install():
     global _installed
     if _installed:
         return
-    if os.environ.get("PYW7GATE", "1") == "0":
+    if os.environ.get("PYW7GATE", "0") != "1":
         return
     import sys
     sys.addaudithook(_audit)

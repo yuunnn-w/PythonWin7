@@ -15,7 +15,7 @@ GUI stubs (subsystem=WINDOWS, e.g. idle) get pythonw.exe and no console
 boilerplate.  Files that are not distlib stubs are skipped.
 
 Usage:
-    python make_stub_bats.py [TREE]     # default: sibling Python314 tree
+    python make_stub_bats.py TREE        (TREE may be set via PYW7_TREE)
     python make_stub_bats.py --scripts-dir D:\\path\\Scripts [--dry-run]
 """
 import argparse
@@ -85,12 +85,17 @@ start "" "%~dp0..\\{py_exe}" -c "import sys; from {module} import {func} as _ent
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("tree", nargs="?",
-                    default=os.path.normpath(os.path.join(
-                        HERE, "..", "..", "..", "Python", "Python314")))
+                    default=os.environ.get("PYW7_TREE"),
+                    help="Python tree; may also be set via the PYW7_TREE "
+                         "environment variable")
     ap.add_argument("--scripts-dir", default=None)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
+    if not args.tree and not args.scripts_dir:
+        print("error: pass TREE (or set PYW7_TREE) or --scripts-dir",
+              file=sys.stderr)
+        return 2
     scripts = args.scripts_dir or os.path.join(args.tree, "Scripts")
     if not os.path.isdir(scripts):
         print("error: no Scripts dir: " + scripts, file=sys.stderr)

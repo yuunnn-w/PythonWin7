@@ -8,14 +8,28 @@
   python -m pywin7gate pip <args...>      run pip, then auto fix-all
                                           (this is what local-pip.bat calls)
   python -m pywin7gate verify             verify manifest hashes
+  python -m pywin7gate prune              drop manifest entries whose files
+                                          were removed by package upgrades
+  python -m pywin7gate relocate           rewrite Scripts\\*.exe shebangs to
+                                          THIS tree (legacy distlib shims;
+                                          PyKexExe-converted shims need no
+                                          relocation and are skipped)
+  python -m pywin7gate shims              convert Scripts\\*.exe python-script
+                                          shims to the relocatable PyKexExe
+                                          stub (originals -> Scripts\\pyw7bak)
   python -m pywin7gate restore <path>     roll back fixes for one file
   python -m pywin7gate status             summary
 """
 import os
 import sys
 
-from . import fixers, gate
+from . import fixers, gate, shims
 from .iatpatch import restore as iat_restore, is_patched
+
+# canonical implementations live in pywin7gate.shims (shared with build_pack)
+_shim_zip_start = shims.shim_zip_start
+_split_shebang = shims.split_shebang
+_join_shebang = shims.join_shebang
 
 
 def _cmd_scan(paths, fix=False):
@@ -34,6 +48,11 @@ def _cmd_pip(args):
     if rc == 0 and args and args[0] in ("install", "wheel"):
         print("[pywin7gate] pip done; gating site-packages...")
         _cmd_scan([gate.site_packages()], fix=True)
+        try:
+            if shims.stubs_available(gate.tree_root()):
+                _cmd_shims()
+        except Exception as e:
+            print("[pywin7gate] shim conversion skipped:", e)
     return rc
 
 
@@ -95,6 +114,143 @@ def _cmd_status():
     return 0
 
 
+def _cmd_prune():
+    m = gate.load_manifest()
+    sp = gate.site_packages()
+    gone = [rel for rel in m["files"]
+            if not os.path.exists(os.path.join(sp, rel))]
+    for rel in gone:
+        del m["files"][rel]
+        print("pruned:", rel)
+    if gone:
+        gate.save_manifest(m, sp)
+    print("prune: %d removed, %d entries remain" % (len(gone),
+                                                    len(m["files"])))
+    return 0
+
+
+def _relocate_one(path, root):
+    """Rewrite the embedded python interpreter shebang of a console-script
+    exe shim to point into <root>.  Handles both shim generations:
+    new-style (stub | '#!exe\\n' | zip) and old distlib-style (stub | zip
+    whose stored __main__.py carries the '#!exe' first line).
+    Returns 'rewritten' / 'ok' / 'skip'."""
+    import io
+    import zipfile
+    with open(path, "rb") as f:
+        data = f.read()
+    zstart = _shim_zip_start(data)
+    if zstart < 0:
+        return "skip"
+
+    def remap(exe):
+        """-> (new_path_or_None, skip_flag)"""
+        base = os.path.basename(exe).lower()
+        if not (base.startswith("python") and base.endswith(".exe")):
+            return None, True                      # not a python shim
+        new = os.path.join(root, base)
+        if os.path.normcase(exe) == os.path.normcase(new):
+            return None, False                     # already points here
+        return new, False
+
+    # --- new generation: plain shebang line between stub and zip -----------
+    sh = data.rfind(b"#!", 0, zstart)
+    if sh >= 0 and b"\n" not in data[sh:zstart].rstrip(b"\r\n"):
+        line = data[sh:zstart]
+        body = line[2:].rstrip(b"\r\n")
+        nl = line[2 + len(body):] or b"\r\n"
+        try:
+            exe, suffix = _split_shebang(body)
+        except UnicodeDecodeError:
+            return "skip"
+        new, skip = remap(exe)
+        if skip:
+            return "skip"
+        if new is None:
+            return "ok"
+        out = (data[:sh] + b"#!" +
+               _join_shebang(new, suffix).encode("utf-8") + nl +
+               data[zstart:])
+    # --- old distlib generation: shebang inside the embedded __main__.py ---
+    else:
+        try:
+            zin = zipfile.ZipFile(io.BytesIO(data[zstart:]))
+            names = zin.namelist()
+        except zipfile.BadZipFile:
+            return "skip"
+        if "__main__.py" not in names:
+            return "skip"
+        content = zin.read("__main__.py")
+        if not content.startswith(b"#!"):
+            return "skip"
+        eol = content.find(b"\n")
+        if eol < 0:
+            return "skip"
+        try:
+            exe, suffix = _split_shebang(content[2:eol])
+        except UnicodeDecodeError:
+            return "skip"
+        new, skip = remap(exe)
+        if skip:
+            return "skip"
+        if new is None:
+            return "ok"
+        nl = b"\r\n" if content[eol - 1:eol] == b"\r" else b"\n"
+        newmain = (b"#!" + _join_shebang(new, suffix).encode("utf-8") +
+                   nl + content[eol + 1:])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                d = newmain if item.filename == "__main__.py" \
+                    else zin.read(item.filename)
+                zout.writestr(item, d)
+        out = data[:zstart] + buf.getvalue()
+
+    tmp = path + ".pyw7tmp"
+    with open(tmp, "wb") as f:
+        f.write(out)
+    os.replace(tmp, path)
+    return "rewritten"
+
+
+def _cmd_relocate(root=None):
+    root = root or gate.tree_root()
+    scripts = os.path.join(root, "Scripts")
+    if not os.path.isdir(scripts):
+        print("no Scripts dir:", scripts)
+        return 1
+    counts = {"rewritten": 0, "ok": 0, "skip": 0}
+    for fn in sorted(os.listdir(scripts)):
+        if not fn.lower().endswith(".exe"):
+            continue
+        r = _relocate_one(os.path.join(scripts, fn), root)
+        counts[r] += 1
+        if r == "rewritten":
+            print("relocated:", fn)
+    print("relocate: %d rewritten, %d already ok, %d skipped; target %s"
+          % (counts["rewritten"], counts["ok"], counts["skip"], root))
+    return 0
+
+
+def _cmd_shims():
+    root = gate.tree_root()
+    if not os.path.isdir(os.path.join(root, "Scripts")):
+        print("no Scripts dir:", os.path.join(root, "Scripts"))
+        return 1
+    if not shims.stubs_available(root):
+        print("PyKexExe stubs missing from the tree root -- expected:",
+              ", ".join(sorted(shims.stub_paths(root).values())))
+        print("run tools\\build_pack.py (it copies them), or copy "
+              "PyKexExe.exe / PyKexExeW.exe next to python.exe first")
+        return 1
+    counts = shims.convert_tree(root)
+    print("shims: %d converted, %d stub-refreshed, %d already relocatable, "
+          "%d skipped (originals in Scripts\\%s)"
+          % (counts["converted"], counts["updated"], counts["ok"],
+             counts["skip"], shims.BACKUP_DIRNAME))
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -113,6 +269,12 @@ def main(argv=None):
         return _cmd_pip(rest)
     if cmd == "verify":
         return _cmd_verify()
+    if cmd == "prune":
+        return _cmd_prune()
+    if cmd == "relocate":
+        return _cmd_relocate()
+    if cmd == "shims":
+        return _cmd_shims()
     if cmd == "restore" and rest:
         return _cmd_restore(rest[0])
     if cmd == "status":

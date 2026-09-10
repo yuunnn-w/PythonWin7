@@ -10,14 +10,15 @@
 //        a. next to itself: scan for python3*.dll (excluding the python3.dll
 //           stable-ABI shim), derive the version stem ("39", "313", "314t"),
 //           real exe = "python[w]" + stem + ".exe";
-//        b. if absent (this happens inside a copied venv on <=3.12, where
-//           venv\Scripts\python.exe is a copy of this launcher): read
+//        b. if absent (this launcher inside a copied venv's Scripts): read
 //           ..\pyvenv.cfg, take its "home" directory, and resolve the real
 //           exe there.  In this case __PYVENV_LAUNCHER__=<own path> is set
 //           for the child so getpath.py (3.11+) still detects the venv.
-//        (On 3.13+ the venv redirector exe lands in Scripts instead of this
-//        launcher and execs the base python.exe directly, so venv needs no
-//        fallback there.)
+//        (On 3.13+ venv copies its own venvlauncher.exe redirector into
+//        Scripts; that redirector imports api-ms-win-core-path-l1-1-0.dll
+//        and therefore cannot start on a bare Win7, so build_pack replaces
+//        it with this launcher -- the fallback above then serves every
+//        Python version uniformly.)
 //   2. Creates the real interpreter process, initially suspended.
 //   3. Injects KexDll.dll and PyKexBoot.dll (found next to the REAL exe)
 //      into the child via VirtualAllocEx + WriteProcessMemory +
@@ -33,6 +34,13 @@
 // (ApplicationName selects the real image).  This is required for venv
 // compatibility: the venv redirector's argv[0] carries the venv path that
 // getpath.py uses to detect the virtual environment.
+//
+// Hermetic-tree policy: before CreateProcess the launcher strips
+// PYTHONHOME/PYTHONPATH/PYTHONSTARTUP from its environment and sets
+// PYTHONNOUSERSITE=1, so a host-level Python/Anaconda configuration can
+// never hijack the payload's stdlib or site-packages resolution.  The
+// in-process half (PATH and sys.path sanitizing, conda/venv marker scrub)
+// lives in the tree's sitecustomize.py.
 //
 // Failure policy: if the payload DLLs are missing or injection fails, the
 // child still runs (the static file layer does not depend on this launcher).
@@ -238,7 +246,10 @@ static void PykexBuildRealExeName(const WCHAR *dir, BOOL gui,
         out[0] = 0;
 }
 
-// parse "home = <dir>" out of a pyvenv.cfg file; returns TRUE on success
+// parse "home = <dir>" out of a pyvenv.cfg file; returns TRUE on success.
+// venv writes pyvenv.cfg as UTF-8; decode the home value as UTF-8 first and
+// fall back to the ANSI codepage (naive byte-widening breaks non-ASCII
+// install paths).
 static BOOL PykexReadVenvHome(const WCHAR *cfgPath, WCHAR *outHome,
                               DWORD outCch)
 {
@@ -263,17 +274,27 @@ static BOOL PykexReadVenvHome(const WCHAR *cfgPath, WCHAR *outHome,
             (buf[i + 1] == 'o' || buf[i + 1] == 'O') &&
             (buf[i + 2] == 'm' || buf[i + 2] == 'M') &&
             (buf[i + 3] == 'e' || buf[i + 3] == 'E')) {
-            DWORD j = i + 4, k = 0;
+            DWORD j = i + 4;
+            char line[1024];
+            DWORD k = 0, len;
+            int n;
             while (buf[j] == ' ' || buf[j] == '=') j++;
             while (buf[j] && buf[j] != '\r' && buf[j] != '\n' &&
-                   k + 1 < outCch) {
-                // pyvenv.cfg paths are ASCII/UTF-8; widen naively
-                unsigned char c = (unsigned char) buf[j++];
-                outHome[k++] = (WCHAR) c;
-            }
-            while (k > 0 && outHome[k - 1] == L' ') k--;  // rtrim
-            outHome[k] = 0;
-            ok = k > 0;
+                   k + 1 < sizeof(line))
+                line[k++] = buf[j++];
+            while (k > 0 && line[k - 1] == ' ') k--;   // rtrim
+            if (!k)
+                continue;
+            n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                    line, (int) k, outHome, (int) outCch - 1);
+            if (n <= 0)
+                n = MultiByteToWideChar(CP_ACP, 0, line, (int) k,
+                                        outHome, (int) outCch - 1);
+            if (n <= 0)
+                return FALSE;
+            outHome[n] = 0;
+            len = (DWORD) n;
+            ok = len > 0;
         }
     }
     if (ok && outHome[PykexStrLenW(outHome) - 1] != L'\\')
@@ -435,6 +456,19 @@ static DWORD PykexMain(void)
     // venv is still detected even though the process image is the base exe
     if (inVenv)
         SetEnvironmentVariableW(L"__PYVENV_LAUNCHER__", selfPath);
+
+    // Hermetic-tree policy, boot-time half: a host-level PYTHONHOME or
+    // PYTHONPATH (left behind by another Python / an Anaconda install) would
+    // hijack the payload's stdlib and site-packages resolution BEFORE any
+    // Python-side guard could run, so clear them here where the environment
+    // block is still ours to fix.  PYTHONNOUSERSITE keeps the per-user site
+    // (%APPDATA%\Python, shared across installs of the same version) out of
+    // sys.path for the whole process tree.  sitecustomize finishes the
+    // in-process half (PATH + sys.path + conda/venv marker scrub).
+    SetEnvironmentVariableW(L"PYTHONHOME", NULL);
+    SetEnvironmentVariableW(L"PYTHONPATH", NULL);
+    SetEnvironmentVariableW(L"PYTHONSTARTUP", NULL);
+    SetEnvironmentVariableW(L"PYTHONNOUSERSITE", L"1");
 
     // payload paths live next to the real exe
     PykexStrCpyW(kexDll, payloadDir);

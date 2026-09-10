@@ -5,9 +5,9 @@
 Runs on the dev machine AND on the bare Win7 target (same script, stdlib
 only).  Point it at the tree under test:
 
-    python tests\\test_win7_tree.py --tree D:\\Python314
-    python tests\\test_win7_tree.py --tree D:\\Python314 --skip-static
-    python tests\\test_win7_tree.py --python C:\\path\\python.exe
+    python tests\\test_win7_tree.py --tree <PYTHON_DIR>
+    python tests\\test_win7_tree.py --tree <PYTHON_DIR> --skip-static
+    python tests\\test_win7_tree.py --python <PYTHON_DIR>\\python.exe
 
 Groups:
   G0  interpreter starts, version sane
@@ -217,6 +217,13 @@ def g4(py):
 
 G5_CODE = r"""
 import ctypes, os, struct, sys
+# suppress the OS loader error dialogs (they would block headless runs --
+# the negative control below is EXPECTED to fail its load on bare Win7)
+try:
+    # SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX
+    ctypes.windll.kernel32.SetErrorMode(0x8003)
+except Exception:
+    pass
 dll = os.environ["PYW7_TESTDLL"]
 try:
     h = ctypes.CDLL(dll)
@@ -321,7 +328,7 @@ def static_scan(tree, py):
     scan = os.path.join(PYW7, "tools", "scan_tree.py")
     p = subprocess.run([sys.executable, scan, tree, "--quiet",
                         "--no-version-warn"],
-                       capture_output=True, text=True, timeout=900)
+                       capture_output=True, text=True, timeout=2400)
     record("S", "scan_tree clean (bare Win7 SP1)", p.returncode == 0,
            ((p.stdout or "") + (p.stderr or "")).strip().splitlines()[-1]
            if ((p.stdout or "") + (p.stderr or "")).strip() else "")

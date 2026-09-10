@@ -1,0 +1,30 @@
+# 行尾与二进制策略
+#
+# 说明：本仓库以「逐字节可校验的预编译资产」为核心，任何隐式换行转换都会
+# 破坏 SHA-256，因此二进制显式声明为 binary，文本按扩展名固定换行。
+
+# 文本：源码与文档
+*.py   text eol=lf
+*.c    text eol=lf
+*.h    text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.ini  text eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 预编译资产与官方原件：不做换行/编码转换
+*.dll binary
+*.exe binary
+*.pyd binary
+*.msu binary
+*.cab binary
+*.zip binary
+*.7z binary
+*.pyw7bak binary
+
+# 与上游发布物逐字节一致的 API 基线数据库
+assets/baseline/** binary
+
+# GitHub 语言统计：C 源码集中在 runtime/
+runtime/** linguist-language=C

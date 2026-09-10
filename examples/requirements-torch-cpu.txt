@@ -1,0 +1,10 @@
+# PyTorch 纯 CPU 三件套 —— 必须走 PyTorch 官方 CPU 专用源
+# 原因：PyPI 上的 Windows 版 torch 会附带数 GB 的 NVIDIA CUDA 依赖包，
+#       纯 CPU 老机器完全用不上。
+# 安装命令：uv pip install --python <目标树>\python.exe -r requirements-torch-cpu.txt
+# 3.14 树若无 cp314 wheel 会自动失败，届时跳过即可。
+# 详见 docs/packages.md。
+--index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+torchaudio

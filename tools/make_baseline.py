@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """make_baseline.py -- convert a YY-Thunks analyzer Config txt database
-(e.g. tools/Config/x64/6.1.7600.txt) into the compact JSON baseline that
-pywin7gate ships inside the Python tree (usable on the bare Win7 target,
-where the tools\\Config directory does not exist).
+into the compact JSON baseline that pywin7gate ships inside the Python
+tree (usable on the bare Win7 target, where the database does not exist).
+
+The vendored copy of the database lives in assets/baseline/<arch>/.  To
+regenerate from the YY-Thunks release instead, extract
+third_party/yy-thunks/YY-Thunks-Objs.zip and pass
+--config-root <extracted>/Config.
 
 Usage:
     make_baseline.py [--config-root DIR] [--arch x64] [--target 6.1.7600]
@@ -30,12 +34,12 @@ def main():
     config_root = args.config_root or os.path.join(
         root, "assets", "baseline")                             # vendored
     src = os.path.join(config_root, args.arch, args.target + ".txt")
-    if not os.path.isfile(src):                                 # repo fallback
-        config_root = os.path.normpath(
-            os.path.join(root, "..", "..", "tools", "Config"))
-        src = os.path.join(config_root, args.arch, args.target + ".txt")
     if not os.path.isfile(src):
-        print("error: baseline txt not found:", src)
+        print("error: baseline txt not found:", src, file=sys.stderr)
+        print("hint: the vendored database is in assets\\baseline\\<arch>\\. "
+              "To regenerate from the YY-Thunks release, extract "
+              "third_party\\yy-thunks\\YY-Thunks-Objs.zip and pass "
+              "--config-root <extracted>\\Config", file=sys.stderr)
         return 2
 
     db = {}
